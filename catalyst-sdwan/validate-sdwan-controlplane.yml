@@ -1,0 +1,123 @@
+# playbooks/validate_sdwan_control_plane.yml
+---
+- name: Comprehensive SD-WAN Control Plane Validation
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_ip: "{{ sdwan_components.vmanage.mgmt_ip }}"
+    vmanage_user: "admin"
+    vmanage_password: "admin"
+    validation_results: {}
+
+  tasks:
+    - name: Create validation timestamp
+      set_fact:
+        validation_timestamp: "{{ ansible_date_time.iso8601 }}"
+
+    - name: Test network connectivity to all controllers
+      command: ping -c 3 {{ item }}
+      loop:
+        - "{{ sdwan_components.vmanage.mgmt_ip }}"
+        - "{{ sdwan_components.vbond.mgmt_ip }}"
+        - "{{ sdwan_components.vsmart.mgmt_ip }}"
+      register: ping_results
+      ignore_errors: yes
+
+    - name: Check web interface availability
+      uri:
+        url: "https://{{ item }}"
+        method: GET
+        validate_certs: no
+        status_code: [200, 302, 401, 403]
+        timeout: 10
+      loop:
+        - "{{ sdwan_components.vmanage.mgmt_ip }}"
+        - "{{ sdwan_components.vbond.mgmt_ip }}"
+        - "{{ sdwan_components.vsmart.mgmt_ip }}"
+      register: web_check
+      ignore_errors: yes
+
+    - name: Authenticate to vManage API
+      uri:
+        url: "https://{{ vmanage_ip }}/j_security_check"
+        method: POST
+        body: "j_username={{ vmanage_user }}&j_password={{ vmanage_password }}"
+        body_format: form-urlencoded
+        validate_certs: no
+        status_code: 200
+      register: vmanage_auth
+      ignore_errors: yes
+
+    - name: Get device inventory from vManage
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/system/device/controllers"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: no
+        status_code: 200
+      register: device_inventory
+      when: vmanage_auth is succeeded
+      ignore_errors: yes
+
+    - name: Get control connections status
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/device/control/connections"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: no
+        status_code: 200
+      register: control_connections
+      when: vmanage_auth is succeeded
+      ignore_errors: yes
+
+    - name: Get orchestrator connections
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/device/orchestrator/connections"
+        method: GET
+        headers:
+          Cookie: "{{ vmanage_auth.set_cookie }}"
+        validate_certs: no
+        status_code: 200
+      register: orchestrator_connections
+      when: vmanage_auth is succeeded
+      ignore_errors: yes
+
+    - name: Generate validation report
+      template:
+        src: validation_report.j2
+        dest: "{{ playbook_dir }}/reports/sdwan_validation_{{ ansible_date_time.epoch }}.html"
+      vars:
+        ping_results: "{{ ping_results }}"
+        web_check: "{{ web_check }}"
+        device_inventory: "{{ device_inventory }}"
+        control_connections: "{{ control_connections }}"
+        orchestrator_connections: "{{ orchestrator_connections }}"
+
+    - name: Display validation summary
+      debug:
+        msg: |
+          SD-WAN Control Plane Validation Summary
+          ======================================
+          Timestamp: {{ validation_timestamp }}
+          
+          Connectivity Tests:
+          {% for result in ping_results.results %}
+          - {{ result.item }}: {{ 'PASS' if result.rc == 0 else 'FAIL' }}
+          {% endfor %}
+          
+          Web Interface Tests:
+          {% for result in web_check.results %}
+          - {{ result.item }}: {{ 'PASS' if result.status in [200, 302, 401] else 'FAIL' }}
+          {% endfor %}
+          
+          vManage API: {{ 'PASS' if vmanage_auth is succeeded else 'FAIL' }}
+          
+          {% if device_inventory is defined and device_inventory is succeeded %}
+          Registered Devices: {{ device_inventory.json.data | length }}
+          {% endif %}
+          
+          {% if control_connections is defined and control_connections is succeeded %}
+          Active Control Connections: {{ control_connections.json.data | length }}
+          {% endif %}
