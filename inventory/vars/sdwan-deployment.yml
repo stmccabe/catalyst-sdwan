@@ -1,45 +1,540 @@
-# vars/sdwan_deployment.yml
-# Additional deployment variables
+---
+# deploy_sdwan.yml - Optimized SD-WAN Deployment Playbook
+- name: Deploy Cisco SD-WAN Control Plane on ESXi
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - vars/deployment_config.yml
+    - vars/vault.yml
+  
+  vars:
+    deployment_id: "{{ ansible_date_time.epoch }}"
+    deployment_state_file: "{{ playbook_dir }}/.deployment_state_{{ deployment_id }}.json"
+    
+  pre_tasks:
+    - name: Validate prerequisites
+      block:
+        - name: Check required variables
+          assert:
+            that:
+              - vcenter_host is defined
+              - vcenter_username is defined
+              - vcenter_password is defined
+              - sdwan_components is defined
+            fail_msg: "Missing required configuration variables"
+            
+        - name: Verify OVA files exist
+          stat:
+            path: "{{ item.value.ova_path }}"
+          register: ova_files
+          loop: "{{ sdwan_components | dict2items }}"
+          failed_when: not ova_files.stat.exists
+          delegate_to: localhost
+          
+        - name: Create working directories
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: '0755'
+          loop:
+            - "{{ playbook_dir }}/reports"
+            - "{{ playbook_dir }}/logs"
+            - "{{ playbook_dir }}/certificates"
+            - "{{ playbook_dir }}/backup"
 
-# Resource allocation
-vm_resources:
-  vmanage:
-    memory_mb: 16384
-    num_cpus: 8
-    disk_gb: 100
-  vbond:
-    memory_mb: 4096
-    num_cpus: 2
-    disk_gb: 20
-  vsmart:
-    memory_mb: 4096
-    num_cpus: 2
-    disk_gb: 20
+  tasks:
+    # ============================================
+    # DEPLOYMENT PHASE
+    # ============================================
+    - name: Deploy SD-WAN Controllers
+      block:
+        - name: Deploy VMs from OVA templates
+          community.vmware.vmware_deploy_ovf:
+            hostname: "{{ vcenter_host }}"
+            username: "{{ vcenter_username }}"
+            password: "{{ vcenter_password }}"
+            validate_certs: "{{ validate_certs | default(false) }}"
+            datacenter: "{{ datacenter_name }}"
+            cluster: "{{ cluster_name }}"
+            datastore: "{{ item.value.datastore }}"
+            name: "{{ item.value.vm_name }}"
+            ovf: "{{ item.value.ova_path }}"
+            networks:
+              "Management": "{{ item.value.network }}"
+              "WAN": "{{ item.value.wan_network | default(item.value.network) }}"
+            properties:
+              ip0: "{{ item.value.mgmt_ip }}"
+              netmask0: "{{ item.value.netmask | default('255.255.255.0') }}"
+              gateway: "{{ item.value.gateway }}"
+              dns: "{{ item.value.dns | default('8.8.8.8') }}"
+              domain: "{{ item.value.domain | default('local') }}"
+              hostname: "{{ item.value.hostname }}"
+              system-ip: "{{ item.value.system_ip }}"
+              site-id: "{{ item.value.site_id }}"
+              device-type: "{{ item.key }}"
+              organization-name: "{{ item.value.org_name }}"
+              vbond: "{{ sdwan_components.vbond.mgmt_ip }}"
+            power_on: false
+            wait: true
+            wait_for_ip_address: false
+          loop: "{{ sdwan_components | dict2items }}"
+          register: vm_deployment
+          async: 3600
+          poll: 0
+          
+        - name: Wait for VM deployment completion
+          async_status:
+            jid: "{{ item.ansible_job_id }}"
+          register: deploy_jobs
+          until: deploy_jobs.finished
+          retries: 60
+          delay: 30
+          loop: "{{ vm_deployment.results }}"
+          
+        - name: Configure VM hardware specifications
+          community.vmware.vmware_guest:
+            hostname: "{{ vcenter_host }}"
+            username: "{{ vcenter_username }}"
+            password: "{{ vcenter_password }}"
+            validate_certs: false
+            datacenter: "{{ datacenter_name }}"
+            name: "{{ item.value.vm_name }}"
+            state: present
+            hardware:
+              memory_mb: "{{ vm_resources[item.key].memory_mb }}"
+              num_cpus: "{{ vm_resources[item.key].num_cpus }}"
+              num_cpu_cores_per_socket: "{{ vm_resources[item.key].cores_per_socket | default(2) }}"
+              hotadd_cpu: false
+              hotadd_memory: false
+              version: "{{ vm_hardware_version | default('14') }}"
+            disk:
+              - size_gb: "{{ vm_resources[item.key].disk_gb }}"
+                type: thin
+                datastore: "{{ item.value.datastore }}"
+          loop: "{{ sdwan_components | dict2items }}"
+          
+        - name: Power on VMs in sequence
+          community.vmware.vmware_guest_powerstate:
+            hostname: "{{ vcenter_host }}"
+            username: "{{ vcenter_username }}"
+            password: "{{ vcenter_password }}"
+            validate_certs: false
+            name: "{{ item.value.vm_name }}"
+            state: powered-on
+          loop: "{{ sdwan_components | dict2items }}"
+          loop_control:
+            pause: 30
+            
+        - name: Save deployment state
+          copy:
+            content: |
+              {
+                "deployment_id": "{{ deployment_id }}",
+                "timestamp": "{{ ansible_date_time.iso8601 }}",
+                "components": {{ sdwan_components | to_json }},
+                "status": "deployed"
+              }
+            dest: "{{ deployment_state_file }}"
+            
+      rescue:
+        - name: Handle deployment failure
+          debug:
+            msg: "Deployment failed. Check logs for details."
+        - name: Mark deployment as failed
+          copy:
+            content: |
+              {
+                "deployment_id": "{{ deployment_id }}",
+                "timestamp": "{{ ansible_date_time.iso8601 }}",
+                "status": "failed",
+                "error": "{{ ansible_failed_result.msg }}"
+              }
+            dest: "{{ deployment_state_file }}"
+        - fail:
+            msg: "Deployment failed. Rolling back may be required."
 
-# Network configuration
-networks:
-  management:
-    name: "SDWAN-MGMT"
-    vlan_id: 100
-    subnet: "192.168.1.0/24"
-  transport:
-    name: "SDWAN-TRANSPORT" 
-    vlan_id: 200
-    subnet: "10.1.1.0/24"
+    # ============================================
+    # CONNECTIVITY VERIFICATION
+    # ============================================
+    - name: Verify Initial Connectivity
+      block:
+        - name: Wait for VMs to initialize
+          pause:
+            seconds: "{{ initial_boot_time | default(300) }}"
+            prompt: "Waiting for VMs to initialize..."
+            
+        - name: Check SSH port availability
+          wait_for:
+            host: "{{ item.value.mgmt_ip }}"
+            port: 22
+            timeout: "{{ ssh_timeout | default(600) }}"
+            delay: 30
+            state: started
+          loop: "{{ sdwan_components | dict2items }}"
+          register: ssh_checks
+          
+        - name: Verify HTTPS services
+          uri:
+            url: "https://{{ item.value.mgmt_ip }}"
+            method: GET
+            validate_certs: false
+            timeout: 30
+            status_code: [200, 302, 401, 403]
+          loop: "{{ sdwan_components | dict2items }}"
+          register: https_checks
+          retries: 20
+          delay: 30
+          until: https_checks.status in [200, 302, 401, 403]
+          
+      rescue:
+        - name: Connectivity check failed
+          debug:
+            msg: "Some controllers are not responding. Continuing with partial deployment."
 
-# Post-deployment validation settings
-validation_checks:
-  - system_status
-  - control_connections
-  - certificate_status
-  - orchestrator_connectivity
-  - api_connectivity
-  - device_registration
+    # ============================================
+    # POST-DEPLOYMENT SUMMARY
+    # ============================================
+    - name: Generate Deployment Summary
+      template:
+        src: templates/deployment_summary.j2
+        dest: "{{ playbook_dir }}/reports/deployment_{{ deployment_id }}.html"
+      vars:
+        deployment_results:
+          vms_deployed: "{{ vm_deployment.results | length }}"
+          ssh_available: "{{ ssh_checks.results | selectattr('failed', 'undefined') | list | length }}"
+          https_available: "{{ https_checks.results | selectattr('status', 'in', [200, 302, 401, 403]) | list | length }}"
 
-# Timeout settings (in seconds)
-timeouts:
-  vm_deploy: 1800
-  boot_wait: 600
-  ssh_connect: 300
-  api_ready: 900
-  control_plane: 1200
+
+# validate_sdwan.yml - Optimized Validation Playbook
+- name: SD-WAN Control Plane Validation
+  hosts: localhost
+  gather_facts: true
+  vars_files:
+    - vars/deployment_config.yml
+    - vars/vault.yml
+    
+  vars:
+    validation_id: "{{ ansible_date_time.epoch }}"
+    vmanage_session: {}
+    validation_results: {}
+    
+  tasks:
+    # ============================================
+    # PHASE 1: PRE-VALIDATION CHECKS
+    # ============================================
+    - name: Phase 1 - Pre-Validation Connectivity
+      block:
+        - name: Network reachability test
+          command: ping -c 3 -W 5 {{ item.value.mgmt_ip }}
+          loop: "{{ sdwan_components | dict2items }}"
+          register: ping_results
+          changed_when: false
+          failed_when: false
+          
+        - name: TCP port connectivity matrix
+          wait_for:
+            host: "{{ item.0.value.mgmt_ip }}"
+            port: "{{ item.1 }}"
+            timeout: 10
+            state: started
+          loop: "{{ sdwan_components | dict2items | product(required_ports) | list }}"
+          register: port_matrix
+          failed_when: false
+          
+        - name: Set connectivity results
+          set_fact:
+            validation_results: "{{ validation_results | combine({'phase1': {
+              'ping_success': ping_results.results | selectattr('rc', 'equalto', 0) | list | length,
+              'ping_total': ping_results.results | length,
+              'ports_open': port_matrix.results | selectattr('failed', 'undefined') | list | length,
+              'ports_total': port_matrix.results | length
+            }}) }}"
+            
+      tags: [validation, phase1]
+
+    # ============================================
+    # PHASE 2: vMANAGE API AUTHENTICATION
+    # ============================================
+    - name: Phase 2 - vManage API Session Management
+      block:
+        - name: Establish vManage session
+          uri:
+            url: "https://{{ vmanage_ip }}/j_security_check"
+            method: POST
+            body: "j_username={{ vmanage_username }}&j_password={{ vmanage_password }}"
+            body_format: form-urlencoded
+            validate_certs: false
+            status_code: 200
+            timeout: 60
+          register: auth_response
+          retries: 10
+          delay: 30
+          until: auth_response.status == 200
+          
+        - name: Retrieve CSRF token
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/client/token"
+            method: GET
+            headers:
+              Cookie: "{{ auth_response.cookies_string }}"
+            validate_certs: false
+            return_content: true
+          register: csrf_response
+          
+        - name: Set session variables
+          set_fact:
+            vmanage_session:
+              cookie: "{{ auth_response.cookies_string }}"
+              csrf_token: "{{ csrf_response.content }}"
+              authenticated: true
+              
+      rescue:
+        - name: Authentication failed
+          set_fact:
+            vmanage_session:
+              authenticated: false
+              error: "{{ ansible_failed_result.msg }}"
+              
+      tags: [validation, phase2]
+
+    # ============================================
+    # PHASE 3: DEVICE INVENTORY VALIDATION
+    # ============================================
+    - name: Phase 3 - Controller Registration Status
+      block:
+        - name: Get registered controllers
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/system/device/controllers"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: controllers_data
+          retries: 15
+          delay: 20
+          until: controllers_data.status == 200
+          
+        - name: Get complete device inventory
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/device"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: device_inventory
+          
+        - name: Analyze device registration
+          set_fact:
+            validation_results: "{{ validation_results | combine({'phase3': {
+              'controllers_registered': controllers_data.json.data | length,
+              'vmanage_count': controllers_data.json.data | selectattr('deviceType', 'equalto', 'vmanage') | list | length,
+              'vbond_count': controllers_data.json.data | selectattr('deviceType', 'equalto', 'vbond') | list | length,
+              'vsmart_count': controllers_data.json.data | selectattr('deviceType', 'equalto', 'vsmart') | list | length,
+              'total_devices': device_inventory.json.data | length,
+              'devices_online': device_inventory.json.data | selectattr('reachability', 'equalto', 'reachable') | list | length
+            }}) }}"
+            
+      when: vmanage_session.authenticated | default(false)
+      tags: [validation, phase3]
+
+    # ============================================
+    # PHASE 4: CONTROL PLANE VALIDATION
+    # ============================================
+    - name: Phase 4 - Control Plane Health Assessment
+      block:
+        - name: Get control connections
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/device/control/connections"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: control_connections
+          
+        - name: Get orchestrator connections
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/device/orchestrator/connections"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: orchestrator_data
+          
+        - name: Get OMP peer status
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/device/omp/peers"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: omp_peers
+          failed_when: false
+          
+        - name: Analyze control plane health
+          set_fact:
+            validation_results: "{{ validation_results | combine({'phase4': {
+              'control_connections_up': control_connections.json.data | selectattr('state', 'equalto', 'up') | list | length,
+              'control_connections_total': control_connections.json.data | length,
+              'orchestrator_up': orchestrator_data.json.data | selectattr('state', 'equalto', 'up') | list | length,
+              'orchestrator_total': orchestrator_data.json.data | length,
+              'omp_peers_up': omp_peers.json.data | default([]) | selectattr('state', 'equalto', 'up') | list | length if omp_peers.status == 200 else 0,
+              'control_plane_healthy': (control_connections.json.data | selectattr('state', 'equalto', 'up') | list | length) > 0
+            }}) }}"
+            
+      when: vmanage_session.authenticated | default(false)
+      tags: [validation, phase4]
+
+    # ============================================
+    # PHASE 5: CERTIFICATE VALIDATION
+    # ============================================
+    - name: Phase 5 - Certificate Infrastructure
+      block:
+        - name: Get certificate status
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/certificate/status"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: cert_status
+          
+        - name: Get root certificate chain
+          uri:
+            url: "https://{{ vmanage_ip }}/dataservice/certificate/rootcertchain"
+            method: GET
+            headers:
+              Cookie: "{{ vmanage_session.cookie }}"
+              X-XSRF-TOKEN: "{{ vmanage_session.csrf_token }}"
+            validate_certs: false
+            return_content: true
+          register: root_cert
+          failed_when: false
+          
+        - name: Analyze certificate health
+          set_fact:
+            validation_results: "{{ validation_results | combine({'phase5': {
+              'certificates_installed': cert_status.json.data | selectattr('certificateInstalled', 'equalto', 'Installed') | list | length,
+              'certificates_valid': cert_status.json.data | selectattr('validity', 'equalto', 'Valid') | list | length,
+              'certificates_total': cert_status.json.data | length,
+              'root_ca_present': root_cert.status == 200
+            }}) }}"
+            
+      when: vmanage_session.authenticated | default(false)
+      tags: [validation, phase5]
+
+    # ============================================
+    # PHASE 6: COMPREHENSIVE REPORTING
+    # ============================================
+    - name: Phase 6 - Generate Validation Reports
+      block:
+        - name: Calculate overall health score
+          set_fact:
+            health_score: "{{ (
+              (validation_results.phase1.ping_success / validation_results.phase1.ping_total * 25) +
+              (validation_results.phase3.controllers_registered / 3 * 25 if vmanage_session.authenticated else 0) +
+              (validation_results.phase4.control_connections_up / (validation_results.phase4.control_connections_total | default(1)) * 25 if vmanage_session.authenticated else 0) +
+              (validation_results.phase5.certificates_valid / (validation_results.phase5.certificates_total | default(1)) * 25 if vmanage_session.authenticated else 0)
+            ) | int }}"
+            
+        - name: Determine validation status
+          set_fact:
+            overall_status: "{{ 'SUCCESS' if health_score | int >= 80 else 'WARNING' if health_score | int >= 60 else 'CRITICAL' }}"
+            status_color: "{{ 'green' if health_score | int >= 80 else 'yellow' if health_score | int >= 60 else 'red' }}"
+            
+        - name: Generate HTML validation report
+          template:
+            src: templates/validation_report_optimized.j2
+            dest: "{{ playbook_dir }}/reports/validation_{{ validation_id }}.html"
+          vars:
+            validation_data: "{{ validation_results }}"
+            health_score: "{{ health_score }}"
+            overall_status: "{{ overall_status }}"
+            
+        - name: Generate JSON report for automation
+          copy:
+            content: |
+              {
+                "validation_id": "{{ validation_id }}",
+                "timestamp": "{{ ansible_date_time.iso8601 }}",
+                "health_score": {{ health_score }},
+                "status": "{{ overall_status }}",
+                "results": {{ validation_results | to_nice_json }},
+                "vmanage_session": {
+                  "authenticated": {{ vmanage_session.authenticated | default(false) | to_json }}
+                },
+                "recommendations": {{ recommendations | default([]) | to_json }}
+              }
+            dest: "{{ playbook_dir }}/reports/validation_{{ validation_id }}.json"
+            
+        - name: Display validation summary
+          debug:
+            msg: |
+              ╔═══════════════════════════════════════════════════════╗
+              ║     SD-WAN CONTROL PLANE VALIDATION SUMMARY          ║
+              ╠═══════════════════════════════════════════════════════╣
+              ║ Validation ID: {{ validation_id }}
+              ║ Timestamp: {{ ansible_date_time.iso8601 }}
+              ║ 
+              ║ HEALTH SCORE: {{ health_score }}/100
+              ║ OVERALL STATUS: {{ overall_status }}
+              ║ 
+              ║ CONNECTIVITY:
+              ║   Ping Success: {{ validation_results.phase1.ping_success }}/{{ validation_results.phase1.ping_total }}
+              ║   Ports Open: {{ validation_results.phase1.ports_open }}/{{ validation_results.phase1.ports_total }}
+              ║ 
+              {% if vmanage_session.authenticated | default(false) %}
+              ║ DEVICE REGISTRATION:
+              ║   Controllers: {{ validation_results.phase3.controllers_registered }}
+              ║   vManage: {{ validation_results.phase3.vmanage_count }}
+              ║   vBond: {{ validation_results.phase3.vbond_count }}
+              ║   vSmart: {{ validation_results.phase3.vsmart_count }}
+              ║   Online Devices: {{ validation_results.phase3.devices_online }}/{{ validation_results.phase3.total_devices }}
+              ║ 
+              ║ CONTROL PLANE:
+              ║   Connections Up: {{ validation_results.phase4.control_connections_up }}/{{ validation_results.phase4.control_connections_total }}
+              ║   Orchestrator: {{ validation_results.phase4.orchestrator_up }}/{{ validation_results.phase4.orchestrator_total }}
+              ║   OMP Peers: {{ validation_results.phase4.omp_peers_up }}
+              ║   Status: {{ 'HEALTHY' if validation_results.phase4.control_plane_healthy else 'DEGRADED' }}
+              ║ 
+              ║ CERTIFICATES:
+              ║   Installed: {{ validation_results.phase5.certificates_installed }}/{{ validation_results.phase5.certificates_total }}
+              ║   Valid: {{ validation_results.phase5.certificates_valid }}/{{ validation_results.phase5.certificates_total }}
+              {% endif %}
+              ║ 
+              ║ Reports: {{ playbook_dir }}/reports/
+              ╚═══════════════════════════════════════════════════════╝
+              
+      tags: [validation, phase6, reporting]
+
+    # ============================================
+    # VALIDATION ASSERTIONS
+    # ============================================
+    - name: Assert Minimum Requirements
+      assert:
+        that:
+          - validation_results.phase1.ping_success == validation_results.phase1.ping_total
+          - vmanage_session.authenticated | default(false)
+          - validation_results.phase3.controllers_registered | default(0) >= 3
+          - validation_results.phase3.vmanage_count | default(0) >= 1
+          - validation_results.phase3.vbond_count | default(0) >= 1
+          - validation_results.phase3.vsmart_count | default(0) >= 1
+          - health_score | int >= 70
+        fail_msg: |
+          Validation failed! Health score: {{ health_score }}/100
+          Review the validation report for detailed analysis.
+        success_msg: |
+          ✓ All validation checks passed!
+          SD-WAN control plane is operational with {{ health_score }}/100 health score.
+      tags: [validation, assert]
