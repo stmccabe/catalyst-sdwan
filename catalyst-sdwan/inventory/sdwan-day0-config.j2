@@ -1,0 +1,81 @@
+# templates/sdwan_day0_config.j2
+# Day-0 configuration template for SD-WAN devices
+
+system
+ host-name {{ hostname }}
+ system-ip {{ system_ip }}
+ site-id {{ site_id }}
+ admin-tech-on-failure
+ sp-organization-name {{ org_name }}
+ organization-name {{ org_name }}
+ vbond {{ vbond_ip }} port 12346
+!
+{% if device_type == 'vmanage' %}
+vpn 0
+ interface eth0
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  tunnel-interface
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+vpn 512
+ interface eth1
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+{% elif device_type == 'vbond' %}
+vpn 0
+ interface ge0/0
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  tunnel-interface
+   encapsulation ipsec
+   no allow-service bgp
+   allow-service dhcp
+   allow-service dns
+   allow-service icmp
+   allow-service sshd
+   allow-service netconf
+   no allow-service ntp
+   no allow-service ospf
+   no allow-service stun
+   allow-service https
+  !
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+vpn 512
+ interface eth0
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+{% elif device_type == 'vsmart' %}
+vpn 0
+ interface eth0
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+vpn 512
+ interface eth1
+  ip address {{ mgmt_ip }}/{{ netmask | ipaddr('prefix') }}
+  no shutdown
+ !
+ ip route 0.0.0.0/0 {{ gateway }}
+!
+{% endif %}
+
+system
+ clock timezone {{ timezone | default('UTC') }}
+ ntp
+  server {{ ntp_server | default('pool.ntp.org')}}
+   version 4
+  !
+ !
+!

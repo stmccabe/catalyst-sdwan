@@ -1,0 +1,335 @@
+---
+# Cisco SD-WAN Deployment Automation
+# This playbook deploys vManage, vBond, and vSmart on ESXi hosts
+
+- name: Deploy Cisco SD-WAN Control Plane Components
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # ESXi Connection Details
+    vcenter_hostname: "{{ vcenter_host }}"
+    vcenter_username: "{{ vcenter_user }}"
+    vcenter_password: "{{ vcenter_pass }}"
+    datacenter_name: "{{ datacenter }}"
+    cluster_name: "{{ cluster }}"
+    
+    # SD-WAN Component Details
+    sdwan_components:
+      vmanage:
+        vm_name: "vmanage-01"
+        ova_path: "/path/to/viptela-vmanage-genericx86-64.ova"
+        datastore: "datastore1"
+        network: "SDWAN-MGMT"
+        mgmt_ip: "192.168.1.10"
+        netmask: "255.255.255.0"
+        gateway: "192.168.1.1"
+        dns: "8.8.8.8"
+        hostname: "vmanage-01"
+        system_ip: "1.1.1.1"
+        site_id: "100"
+        org_name: "MyOrg"
+        vbond_ip: "192.168.1.20"
+        
+      vbond:
+        vm_name: "vbond-01"
+        ova_path: "/path/to/viptela-edge-genericx86-64.ova"
+        datastore: "datastore1"
+        network: "SDWAN-MGMT"
+        mgmt_ip: "192.168.1.20"
+        netmask: "255.255.255.0"
+        gateway: "192.168.1.1"
+        dns: "8.8.8.8"
+        hostname: "vbond-01"
+        system_ip: "1.1.1.20"
+        site_id: "100"
+        org_name: "MyOrg"
+        
+      vsmart:
+        vm_name: "vsmart-01"
+        ova_path: "/path/to/viptela-smart-genericx86-64.ova"
+        datastore: "datastore1"
+        network: "SDWAN-MGMT"
+        mgmt_ip: "192.168.1.30"
+        netmask: "255.255.255.0"
+        gateway: "192.168.1.1"
+        dns: "8.8.8.8"
+        hostname: "vsmart-01"
+        system_ip: "1.1.1.30"
+        site_id: "100"
+        org_name: "MyOrg"
+        vbond_ip: "192.168.1.20"
+
+  tasks:
+    - name: Deploy vManage OVA
+      vmware_deploy_ovf:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        cluster: "{{ cluster_name }}"
+        datastore: "{{ sdwan_components.vmanage.datastore }}"
+        name: "{{ sdwan_components.vmanage.vm_name }}"
+        ovf: "{{ sdwan_components.vmanage.ova_path }}"
+        wait_for_ip_address: true
+        validate_certs: false
+        networks:
+          "Management": "{{ sdwan_components.vmanage.network }}"
+        properties:
+          ip0: "{{ sdwan_components.vmanage.mgmt_ip }}"
+          netmask0: "{{ sdwan_components.vmanage.netmask }}"
+          gateway: "{{ sdwan_components.vmanage.gateway }}"
+          dns: "{{ sdwan_components.vmanage.dns }}"
+          domain: "local"
+          hostname: "{{ sdwan_components.vmanage.hostname }}"
+          system-ip: "{{ sdwan_components.vmanage.system_ip }}"
+          site-id: "{{ sdwan_components.vmanage.site_id }}"
+          device-type: "vmanage"
+          organization-name: "{{ sdwan_components.vmanage.org_name }}"
+          vbond: "{{ sdwan_components.vmanage.vbond_ip }}"
+        power_on: true
+      tags: vmanage
+
+    - name: Deploy vBond OVA
+      vmware_deploy_ovf:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        cluster: "{{ cluster_name }}"
+        datastore: "{{ sdwan_components.vbond.datastore }}"
+        name: "{{ sdwan_components.vbond.vm_name }}"
+        ovf: "{{ sdwan_components.vbond.ova_path }}"
+        wait_for_ip_address: true
+        validate_certs: false
+        networks:
+          "Management": "{{ sdwan_components.vbond.network }}"
+        properties:
+          ip0: "{{ sdwan_components.vbond.mgmt_ip }}"
+          netmask0: "{{ sdwan_components.vbond.netmask }}"
+          gateway: "{{ sdwan_components.vbond.gateway }}"
+          dns: "{{ sdwan_components.vbond.dns }}"
+          domain: "local"
+          hostname: "{{ sdwan_components.vbond.hostname }}"
+          system-ip: "{{ sdwan_components.vbond.system_ip }}"
+          site-id: "{{ sdwan_components.vbond.site_id }}"
+          device-type: "vbond"
+          organization-name: "{{ sdwan_components.vbond.org_name }}"
+        power_on: true
+      tags: vbond
+
+    - name: Deploy vSmart OVA
+      vmware_deploy_ovf:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        datacenter: "{{ datacenter_name }}"
+        cluster: "{{ cluster_name }}"
+        datastore: "{{ sdwan_components.vsmart.datastore }}"
+        name: "{{ sdwan_components.vsmart.vm_name }}"
+        ovf: "{{ sdwan_components.vsmart.ova_path }}"
+        wait_for_ip_address: true
+        validate_certs: false
+        networks:
+          "Management": "{{ sdwan_components.vsmart.network }}"
+        properties:
+          ip0: "{{ sdwan_components.vsmart.mgmt_ip }}"
+          netmask0: "{{ sdwan_components.vsmart.netmask }}"
+          gateway: "{{ sdwan_components.vsmart.gateway }}"
+          dns: "{{ sdwan_components.vsmart.dns }}"
+          domain: "local"
+          hostname: "{{ sdwan_components.vsmart.hostname }}"
+          system-ip: "{{ sdwan_components.vsmart.system_ip }}"
+          site-id: "{{ sdwan_components.vsmart.site_id }}"
+          device-type: "vsmart"
+          organization-name: "{{ sdwan_components.vsmart.org_name }}"
+          vbond: "{{ sdwan_components.vsmart.vbond_ip }}"
+        power_on: true
+      tags: vsmart
+
+    - name: Wait for VMs to boot completely
+      pause:
+        minutes: 10
+      tags: wait
+
+    - name: Test SSH connectivity to vManage
+      wait_for:
+        host: "{{ sdwan_components.vmanage.mgmt_ip }}"
+        port: 22
+        timeout: 300
+        state: started
+      tags: connectivity
+
+    - name: Test SSH connectivity to vBond
+      wait_for:
+        host: "{{ sdwan_components.vbond.mgmt_ip }}"
+        port: 22
+        timeout: 300
+        state: started
+      tags: connectivity
+
+    - name: Test SSH connectivity to vSmart
+      wait_for:
+        host: "{{ sdwan_components.vsmart.mgmt_ip }}"
+        port: 22
+        timeout: 300
+        state: started
+      tags: connectivity
+
+# Post-installation validation playbook
+- name: SD-WAN Control Plane Validation
+  hosts: sdwan_controllers
+  gather_facts: false
+  vars:
+    ansible_connection: network_cli
+    ansible_network_os: ios
+    ansible_user: admin
+    ansible_password: admin
+    ansible_become: false
+
+  tasks:
+    - name: Check system status on vManage
+      ios_command:
+        commands:
+          - show system status
+          - show control connections
+          - show orchestrator connections-history
+      register: vmanage_status
+      when: inventory_hostname == 'vmanage-01'
+      tags: validation
+
+    - name: Check system status on vBond
+      ios_command:
+        commands:
+          - show system status
+          - show control connections
+          - show orchestrator connections-history
+      register: vbond_status
+      when: inventory_hostname == 'vbond-01'
+      tags: validation
+
+    - name: Check system status on vSmart
+      ios_command:
+        commands:
+          - show system status
+          - show control connections
+          - show orchestrator connections-history
+      register: vsmart_status
+      when: inventory_hostname == 'vsmart-01'
+      tags: validation
+
+    - name: Display vManage status
+      debug:
+        var: vmanage_status.stdout_lines
+      when: inventory_hostname == 'vmanage-01' and vmanage_status is defined
+      tags: validation
+
+    - name: Display vBond status
+      debug:
+        var: vbond_status.stdout_lines
+      when: inventory_hostname == 'vbond-01' and vbond_status is defined
+      tags: validation
+
+    - name: Display vSmart status
+      debug:
+        var: vsmart_status.stdout_lines
+      when: inventory_hostname == 'vsmart-01' and vsmart_status is defined
+      tags: validation
+
+    - name: Validate control plane connectivity
+      ios_command:
+        commands:
+          - show control connections | include "vsmart\|vbond\|vmanage"
+      register: control_connections
+      tags: validation
+
+    - name: Check for certificate installation
+      ios_command:
+        commands:
+          - show certificate installed
+      register: cert_status
+      tags: validation
+
+    - name: Verify orchestrator connectivity
+      ios_command:
+        commands:
+          - show orchestrator connections
+      register: orchestrator_conn
+      when: inventory_hostname != 'vbond-01'
+      tags: validation
+
+    - name: Display control plane health summary
+      debug:
+        msg: |
+          Control Plane Health Summary:
+          =============================
+          Device: {{ inventory_hostname }}
+          Control Connections: {{ control_connections.stdout[0] | length }} active
+          Certificate Status: {{ 'Installed' if 'Installed' in cert_status.stdout[0] else 'Pending' }}
+          Orchestrator: {{ 'Connected' if orchestrator_conn is defined and 'up' in orchestrator_conn.stdout[0] else 'Disconnected' }}
+      tags: validation
+
+# Additional validation playbook for API-based checks
+- name: API-based validation for vManage
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_ip: "{{ sdwan_components.vmanage.mgmt_ip }}"
+    vmanage_user: "admin"
+    vmanage_password: "admin"
+
+  tasks:
+    - name: Wait for vManage web interface
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/system/device/controllers"
+        method: GET
+        user: "{{ vmanage_user }}"
+        password: "{{ vmanage_password }}"
+        force_basic_auth: yes
+        validate_certs: no
+        status_code: [200, 401]
+      register: api_test
+      until: api_test.status == 200 or api_test.status == 401
+      retries: 30
+      delay: 10
+      tags: api_validation
+
+    - name: Get authentication token from vManage
+      uri:
+        url: "https://{{ vmanage_ip }}/j_security_check"
+        method: POST
+        body: "j_username={{ vmanage_user }}&j_password={{ vmanage_password }}"
+        body_format: form-urlencoded
+        validate_certs: no
+        status_code: 200
+      register: auth_response
+      tags: api_validation
+
+    - name: Get controller status from vManage API
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/system/device/controllers"
+        method: GET
+        headers:
+          Cookie: "{{ auth_response.set_cookie }}"
+        validate_certs: no
+        status_code: 200
+      register: controllers_status
+      tags: api_validation
+
+    - name: Display controller status
+      debug:
+        msg: |
+          SD-WAN Controllers Status:
+          =========================
+          {{ controllers_status.json | to_nice_json }}
+      tags: api_validation
+
+    - name: Validate all controllers are reachable
+      assert:
+        that:
+          - controllers_status.json.data | length >= 3
+          - controllers_status.json.data | selectattr('deviceType', 'equalto', 'vmanage') | list | length >= 1
+          - controllers_status.json.data | selectattr('deviceType', 'equalto', 'vbond') | list | length >= 1
+          - controllers_status.json.data | selectattr('deviceType', 'equalto', 'vsmart') | list | length >= 1
+        fail_msg: "Not all SD-WAN controllers are properly registered"
+        success_msg: "All SD-WAN controllers are successfully deployed and registered"
+      tags: api_validation

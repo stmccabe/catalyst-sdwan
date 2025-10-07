@@ -1,0 +1,45 @@
+# vars/sdwan_deployment.yml
+# Additional deployment variables
+
+# Resource allocation
+vm_resources:
+  vmanage:
+    memory_mb: 16384
+    num_cpus: 8
+    disk_gb: 100
+  vbond:
+    memory_mb: 4096
+    num_cpus: 2
+    disk_gb: 20
+  vsmart:
+    memory_mb: 4096
+    num_cpus: 2
+    disk_gb: 20
+
+# Network configuration
+networks:
+  management:
+    name: "SDWAN-MGMT"
+    vlan_id: 100
+    subnet: "192.168.1.0/24"
+  transport:
+    name: "SDWAN-TRANSPORT" 
+    vlan_id: 200
+    subnet: "10.1.1.0/24"
+
+# Post-deployment validation settings
+validation_checks:
+  - system_status
+  - control_connections
+  - certificate_status
+  - orchestrator_connectivity
+  - api_connectivity
+  - device_registration
+
+# Timeout settings (in seconds)
+timeouts:
+  vm_deploy: 1800
+  boot_wait: 600
+  ssh_connect: 300
+  api_ready: 900
+  control_plane: 1200
