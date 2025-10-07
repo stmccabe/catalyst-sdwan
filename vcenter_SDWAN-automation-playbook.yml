@@ -1,0 +1,162 @@
+---
+# ============================================
+# sdwam-automation-playbook.yml
+# ============================================
+---
+# ESXi/vCenter Connection
+vcenter_host: "vcenter.example.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "{{ vault_vcenter_password }}"
+datacenter_name: "Datacenter1"
+cluster_name: "Cluster1"
+validate_certs: false
+
+# SD-WAN Organization Settings
+organization_name: "MyCompany-SDWAN"
+domain_id: "1"
+default_site_id: "100"
+
+# vManage API Credentials
+vmanage_ip: "192.168.1.10"
+vmanage_username: "admin"
+vmanage_password: "{{ vault_vmanage_password | default('admin') }}"
+
+# Component Definitions with Enhanced Configuration
+sdwan_components:
+  vmanage:
+    vm_name: "vmanage-01"
+    ova_path: "/vmfs/volumes/datastore1/templates/viptela-vmanage-20.12.ova"
+    datastore: "datastore1"
+    network: "SDWAN-MGMT"
+    wan_network: "SDWAN-MGMT"
+    mgmt_ip: "192.168.1.10"
+    netmask: "255.255.255.0"
+    gateway: "192.168.1.1"
+    dns: "8.8.8.8,8.8.4.4"
+    domain: "sdwan.local"
+    hostname: "vmanage-01"
+    system_ip: "1.1.1.1"
+    site_id: "100"
+    org_name: "{{ organization_name }}"
+    
+  vbond:
+    vm_name: "vbond-01"
+    ova_path: "/vmfs/volumes/datastore1/templates/viptela-edge-20.12.ova"
+    datastore: "datastore1"
+    network: "SDWAN-MGMT"
+    wan_network: "SDWAN-WAN"
+    mgmt_ip: "192.168.1.20"
+    netmask: "255.255.255.0"
+    gateway: "192.168.1.1"
+    dns: "8.8.8.8"
+    domain: "sdwan.local"
+    hostname: "vbond-01"
+    system_ip: "1.1.1.20"
+    site_id: "100"
+    org_name: "{{ organization_name }}"
+    
+  vsmart:
+    vm_name: "vsmart-01"
+    ova_path: "/vmfs/volumes/datastore1/templates/viptela-smart-20.12.ova"
+    datastore: "datastore1"
+    network: "SDWAN-MGMT"
+    wan_network: "SDWAN-MGMT"
+    mgmt_ip: "192.168.1.30"
+    netmask: "255.255.255.0"
+    gateway: "192.168.1.1"
+    dns: "8.8.8.8"
+    domain: "sdwan.local"
+    hostname: "vsmart-01"
+    system_ip: "1.1.1.30"
+    site_id: "100"
+    org_name: "{{ organization_name }}"
+    vbond_ip: "192.168.1.20"
+
+# VM Resource Allocation (Production-Grade)
+vm_resources:
+  vmanage:
+    memory_mb: 32768      # 32GB recommended for production
+    num_cpus: 16
+    cores_per_socket: 8
+    disk_gb: 500
+    network_adapters: 2
+    
+  vbond:
+    memory_mb: 4096       # 4GB minimum
+    num_cpus: 2
+    cores_per_socket: 2
+    disk_gb: 20
+    network_adapters: 2
+    
+  vsmart:
+    memory_mb: 8192       # 8GB recommended
+    num_cpus: 4
+    cores_per_socket: 2
+    disk_gb: 50
+    network_adapters: 1
+
+# Timing and Timeout Configuration
+timeouts:
+  vm_deploy: 1800        # 30 minutes
+  initial_boot: 600      # 10 minutes
+  ssh_timeout: 900       # 15 minutes
+  api_ready: 1200        # 20 minutes
+  control_plane: 1800    # 30 minutes
+  certificate_gen: 300   # 5 minutes
+
+# Network Port Requirements
+required_ports:
+  - 22    # SSH
+  - 443   # HTTPS
+  - 830   # NETCONF
+  - 12346 # vBond Orchestrator
+  - 12444 # Data plane (vBond)
+  - 12446 # NAT traversal
+  - 23456 # Control plane
+
+# NTP and DNS Configuration
+ntp_servers:
+  primary: "time.google.com"
+  secondary: "pool.ntp.org"
+  
+dns_servers:
+  - "8.8.8.8"
+  - "8.8.4.4"
+  - "1.1.1.1"
+
+timezone: "America/New_York"
+
+# Certificate Configuration
+certificate_config:
+  auto_generate: true
+  validity_days: 730
+  key_size: 2048
+  country: "US"
+  state: "California"
+  city: "San Jose"
+  organization: "{{ organization_name }}"
+  organizational_unit: "IT"
+  email: "sdwan-admin@example.com"
+
+# Monitoring and Health Check Settings
+health_check:
+  enabled: true
+  interval_seconds: 300
+  timeout_seconds: 30
+  retries: 3
+  alert_threshold: 70
+
+# Feature Toggles
+features:
+  enable_tls: true
+  enable_encryption: true
+  enable_nat_traversal: true
+  enable_multitenancy: false
+  enable_zero_touch_provisioning: true
+  
+# Backup and Recovery
+backup:
+  enabled: true
+  schedule: "daily"
+  retention_days: 30
+  location: "/backup/sdwan"
