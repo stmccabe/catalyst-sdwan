@@ -248,7 +248,7 @@
               'ping_total': ping_results.results | length,
               'ports_open': port_matrix.results | selectattr('failed', 'undefined') | list | length,
               'ports_total': port_matrix.results | length
-            }}) }}"
+              }}) }}"
             
       tags: [validation, phase1]
 
