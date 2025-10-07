@@ -1,0 +1,72 @@
+# playbooks/sdwan_certificate_management.yml
+- name: SD-WAN Certificate Management
+  hosts: localhost
+  gather_facts: false
+  vars:
+    vmanage_ip: "{{ sdwan_components.vmanage.mgmt_ip }}"
+    vmanage_user: "admin"
+    vmanage_password: "admin"
+    cert_path: "/tmp/sdwan_certs"
+
+  tasks:
+    - name: Create certificate directory
+      file:
+        path: "{{ cert_path }}"
+        state: directory
+        mode: '0700'
+
+    - name: Authenticate to vManage
+      uri:
+        url: "https://{{ vmanage_ip }}/j_security_check"
+        method: POST
+        body: "j_username={{ vmanage_user }}&j_password={{ vmanage_password }}"
+        body_format: form-urlencoded
+        validate_certs: no
+        status_code: 200
+      register: auth_result
+
+    - name: Get current certificate status
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/certificate/status"
+        method: GET
+        headers:
+          Cookie: "{{ auth_result.set_cookie }}"
+        validate_certs: no
+        status_code: 200
+      register: cert_status
+
+    - name: Generate CSR for controllers
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/certificate/generate/csr"
+        method: POST
+        headers:
+          Cookie: "{{ auth_result.set_cookie }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          deviceCSRs:
+            - deviceId: "{{ sdwan_components.vmanage.system_ip }}"
+              subjectAltName: "{{ sdwan_components.vmanage.hostname }}"
+            - deviceId: "{{ sdwan_components.vbond.system_ip }}"
+              subjectAltName: "{{ sdwan_components.vbond.hostname }}"
+            - deviceId: "{{ sdwan_components.vsmart.system_ip }}"
+              subjectAltName: "{{ sdwan_components.vsmart.hostname }}"
+        validate_certs: no
+        status_code: 200
+      register: csr_generation
+      when: cert_status.json.data | selectattr('validity', 'equalto', 'Valid') | list | length < 3
+
+    - name: Install enterprise certificate
+      uri:
+        url: "https://{{ vmanage_ip }}/dataservice/certificate/enterprisecertificate"
+        method: POST
+        headers:
+          Cookie: "{{ auth_result.set_cookie }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          enterpriseCertificate: "{{ lookup('file', enterprise_cert) | b64encode }}"
+        validate_certs: no
+        status_code: 200
+      register: enterprise_cert_install
+      when: enterprise_cert is defined
